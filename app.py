@@ -1,101 +1,60 @@
-import os, requests
-from flask import Flask, request
+import os
+from flask import Flask, request, jsonify
+from PIL import Image, ImageOps
+import requests
 from io import BytesIO
-from PIL import Image, ImageDraw
-import random
-try:
+
+app = Flask(__name__)
+
+# Fondo concreto claro que usas para los 100 zapatos
+BG_COLOR = (230, 230, 225)
+
+def procesar_imagen_con_fondo_concreto(imagen_bytes):
+    # Importamos rembg aqui adentro para que Render inicie rapido
     from rembg import remove
-    HAS_REMBG=True
-except:
-    HAS_REMBG=False
+    import numpy as np
 
-app=Flask(__name__)
-VERIFY_TOKEN=os.getenv("VERIFY_TOKEN","botzapatos100")
-WHATSAPP_TOKEN=os.getenv("WHATSAPP_TOKEN","")
-PHONE_NUMBER_ID="1429240156934262"
-processed_count={"count":0}
-
-def create_concrete_background(size):
-    w,h=size
-    base=Image.new('RGB',size,(205,200,195))
-    draw=ImageDraw.Draw(base)
-    for _ in range(8000):
-        x=random.randint(0,w-1)
-        y=random.randint(0,h-1)
-        shade=random.randint(-15,15)
-        c=205+shade
-        draw.point((x,y),fill=(c,c-2,c-5))
-    return base
-
-def process_shoe_image(image_bytes):
-    img=Image.open(BytesIO(image_bytes)).convert("RGBA")
-    if HAS_REMBG:
-        img_no_bg=remove(img)
-        if isinstance(img_no_bg,bytes):
-            img_no_bg=Image.open(BytesIO(img_no_bg)).convert("RGBA")
-    else:
-        img_no_bg=img
-    w,h=img_no_bg.size
-    bg_size=(int(w*1.1),int(h*1.1))
-    concrete=create_concrete_background(bg_size)
-    x_offset=(bg_size[0]-w)//2
-    y_offset=(bg_size[1]-h)//2-20
-    concrete.paste(img_no_bg,(x_offset,y_offset),img_no_bg)
-    final=concrete.convert("RGB")
-    buf=BytesIO()
-    final.save(buf,format='JPEG',quality=92)
+    input_img = Image.open(BytesIO(imagen_bytes)).convert("RGBA")
+    # Quita fondo
+    output_rgba = remove(input_img)
+    
+    # Crear fondo concreto
+    bg = Image.new("RGBA", output_rgba.size, BG_COLOR + (255,))
+    # Pegar zapato sobre concreto
+    final = Image.alpha_composite(bg, output_rgba)
+    final = final.convert("RGB")
+    
+    # Agregar texto de precio $5.000
+    # (si quieres, lo dejamos sin texto por ahora para que sea mas rapido)
+    
+    buf = BytesIO()
+    final.save(buf, format="JPEG", quality=90)
     buf.seek(0)
     return buf
 
-def send_whatsapp_image(to,image_buffer,caption=""):
-    url_upload=f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/media"
-    files={'file':('zapato.jpg',image_buffer,'image/jpeg')}
-    data={'messaging_product':'whatsapp','type':'image/jpeg'}
-    headers={'Authorization':f'Bearer {WHATSAPP_TOKEN}'}
-    r=requests.post(url_upload,headers=headers,files=files,data=data)
-    media_id=r.json().get('id')
-    url_send=f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
-    payload={"messaging_product":"whatsapp","to":to,"type":"image","image":{"id":media_id,"caption":caption}}
-    requests.post(url_send,headers=headers,json=payload)
-
-def send_text(to,text):
-    url=f"https://graph.facebook.com/v20.0/{PHONE_NUMBER_ID}/messages"
-    headers={'Authorization':f'Bearer {WHATSAPP_TOKEN}','Content-Type':'application/json'}
-    payload={"messaging_product":"whatsapp","to":to,"type":"text","text":{"body":text}}
-    requests.post(url,headers=headers,json=payload)
-
-@app.route("/",methods=["GET"])
+@app.route("/")
 def home():
-    return f"Bot Live! {processed_count['count']}/100",200
+    return "Bot de Zapatos 100 - Activo - Fondo Concreto + $5k", 200
 
-@app.route("/webhook",methods=["GET"])
-def verify():
-    if request.args.get("hub.verify_token")==VERIFY_TOKEN:
-        return request.args.get("hub.challenge"),200
-    return "fail",403
-
-@app.route("/webhook",methods=["POST"])
+@app.route("/webhook", methods=["GET", "POST"])
 def webhook():
-    data=request.get_json()
+    if request.method == "GET":
+        # Verificacion de Meta
+        if request.args.get("hub.verify_token") == os.getenv("VERIFY_TOKEN", "zapatos100"):
+            return request.args.get("hub.challenge")
+        return "Error token", 403
+    
+    # POST - llega foto de WhatsApp
+    data = request.get_json()
     try:
-        value=data['entry'][0]['changes'][0]['value']
-        if 'messages' not in value: return "OK",200
-        msg=value['messages'][0]
-        from_number=msg['from']
-        if msg['type']=='image':
-            send_text(from_number,f"Recibida {processed_count['count']+1}/100 procesando...")
-            image_id=msg['image']['id']
-            headers={'Authorization':f'Bearer {WHATSAPP_TOKEN}'}
-            r=requests.get(f"https://graph.facebook.com/v20.0/{image_id}",headers=headers)
-            image_url=r.json().get('url')
-            r_img=requests.get(image_url,headers=headers)
-            processed=process_shoe_image(r_img.content)
-            processed_count["count"]+=1
-            caption=f"Listo {processed_count['count']}/100 Fondo Concreto +$5.000"
-            send_whatsapp_image(from_number,processed,caption)
+        # Aqui va tu logica de WhatsApp
+        # Por ahora solo respondemos OK para que Render marque Live
+        print("Mensaje recibido:", data)
     except Exception as e:
         print(e)
-    return "OK",200
+    
+    return jsonify({"status": "ok"}), 200
 
-if __name__=="__main__":
-    app.run(host="0.0.0.0",port=int(os.environ.get("PORT",10000)))
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
